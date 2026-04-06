@@ -32,11 +32,11 @@ Built for machine-to-machine workflows. Up and running in one day.
 
 **API first.** The UI exists for testing and investigation. Real usage is machine-to-machine.
 
-**NMS/EMS as source of truth.** This tool does not try to discover or reconcile your network. Your existing NMS or EMS knows what's there — this tool handles provisioning and allocation on top of it.
+**Devices and interface data are injected on demand from your NMS or EMS via the API. The tool provisions and allocates on top of that data. Reconciliation with the source system is possible as an option.
 
 **No bloat.** One Flask app, one MySQL database, one endpoint. Easy to deploy, easy to understand, easy to extend.
 
-**Private IP reuse by design.** The same RFC1918 address can be allocated across multiple VRF domains. Domain namespacing is built into every IP record and assignment.
+**Private IP reuse by design.** The same IP ranges and IP addresses can be allocated across multiple VRF domains. Domain namespacing is built into every IP record and assignment.
 
 ---
 
