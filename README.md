@@ -113,8 +113,9 @@ export DB_NAME=ipam
 ### Run
 
 ```bash
+cd ~/humaipam_test
 source venv/bin/activate
-python3 backend/app.py
+./run.sh
 ```
 
 App is available at `http://localhost:5002`
