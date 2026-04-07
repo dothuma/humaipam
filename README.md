@@ -97,9 +97,6 @@ pip install -r backend/requirements.txt
 
 ### Database setup
 
-```bash
-mysql -u root -p < database/schema.sql
-```
 
 Set credentials as environment variables:
 
@@ -109,12 +106,16 @@ export DB_USER=youruser
 export DB_PASSWORD=yourpassword
 export DB_NAME=ipam
 ```
+Create database and import schema:
+```bash
+mysql -u $DB_USER -p$DB_PASSWORD -e "CREATE DATABASE IF NOT EXISTS $DB_NAME"
+mysql -u $DB_USER -p$DB_PASSWORD $DB_NAME < database/schema.sql
+```
+
 
 ### Run
 
 ```bash
-cd ~/humaipam_test
-source venv/bin/activate
 ./run.sh
 ```
 
