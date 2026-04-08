@@ -1,0 +1,280 @@
+% dothuma serialized output
+% generated: 2026-04-05T22:45:00Z
+% source: jsonwf subapp — engine, dispatch, decomposer, service_catalog
+% nodes: 4
+% order: bfs
+===
+# node: 'jsonwf/src/engine.py'
+# fqnp: jsonwf/src/engine.py
+#!/usr/bin/env python3
+"""
+jsonwf engine — core workflow execution loop
+Iterates fn[], dispatches to catalog functions, merges results into state{}
+"""
+
+import json
+from datetime import datetime
+from jsonwf.src.dispatch import get_dispatch
+
+def now():
+    return datetime.utcnow().strftime('%y%m%d%H%M')
+
+def exec_workflow(doc: dict) -> dict:
+    """
+    Execute jsonwf document.
+    Iterates fn[], calls dispatch function, merges result into state{}.
+    Clears fn[] on completion. Sets end_time and status.
+    On error — sets error field, clears fn[], returns document.
+    """
+    dispatch = get_dispatch(doc)
+
+    for step in doc.get('fn', []):
+        fn_name, args = next(iter(step.items()))
+
+        if fn_name not in dispatch:
+            doc['fn']    = []
+            doc['error'] = f'unknown function: {fn_name}'
+            doc['status'] = 'error'
+            return doc
+
+        on_error = args.pop('on_error', 'abort')
+
+        try:
+            result = dispatch[fn_name](**args, state=doc.get('state', {}))
+            if isinstance(result, dict):
+                doc['state'].update(result)
+            else:
+                doc['state'][fn_name] = result
+        except Exception as e:
+            if on_error == 'abort':
+                doc['fn']    = []
+                doc['error'] = f'{fn_name}: {str(e)}'
+                doc['status'] = 'error'
+                return doc
+            # warn+continue — log and proceed
+            doc['state'].setdefault('warnings', []).append(f'{fn_name}: {str(e)}')
+
+    doc['fn']      = []
+    doc['end_time'] = now()
+    doc['status']  = 'provisioned'
+    return doc
+
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) < 2:
+        print('Usage: python engine.py <workflow.json>')
+        sys.exit(1)
+    with open(sys.argv[1]) as f:
+        doc = json.load(f)
+    result = exec_workflow(doc)
+    print(json.dumps(result, indent=2))
+===
+# node: 'jsonwf/src/dispatch.py'
+# fqnp: jsonwf/src/dispatch.py
+#!/usr/bin/env python3
+"""
+jsonwf dispatch — catalog versions and function registry
+Maps function names to callables per catalog version.
+"""
+
+import requests
+
+MERGED_UI = 'http://localhost:5002/api/'
+
+def api_call(func, args):
+    """Call merged_ui API."""
+    r = requests.post(MERGED_UI, json={'func': func, 'args': args})
+    data = r.json()
+    if data['status'] != 'ok':
+        raise Exception(data['error']['message'])
+    return data['data']
+
+# ── Catalog v1 — 24 merged_ui functions ──────────────────────────────────────
+
+def find_device(**kwargs):    return api_call('find_device',    kwargs)
+def create_device(**kwargs):  return api_call('create_device',  kwargs)
+def find_vrf(**kwargs):       return api_call('find_vrf',       kwargs)
+def create_vrf(**kwargs):     return api_call('create_vrf',     kwargs)
+def update_vrf(**kwargs):     return api_call('update_vrf',     kwargs)
+def delete_vrf(**kwargs):     return api_call('delete_vrf',     kwargs)
+def find_interface(**kwargs): return api_call('find_interface', kwargs)
+def create_interface(**kwargs):     return api_call('create_interface',     kwargs)
+def create_subinterface(**kwargs):  return api_call('create_subinterface',  kwargs)
+def delete_interface(**kwargs):     return api_call('delete_interface',     kwargs)
+def assign_interface_vrf(**kwargs): return api_call('assign_interface_vrf', kwargs)
+def release_interface_vrf(**kwargs):return api_call('release_interface_vrf',kwargs)
+def assign_ip(**kwargs):      return api_call('assign_ip',      kwargs)
+def release_ip_assign(**kwargs):    return api_call('release_ip_assign',    kwargs)
+def ls_ranges(**kwargs):      return api_call('ls_ranges',      kwargs)
+def create_range(**kwargs):   return api_call('create_range',   kwargs)
+def alloc_range(**kwargs):    return api_call('alloc_range',    kwargs)
+def alloc_ip(**kwargs):       return api_call('alloc_ip',       kwargs)
+def release_range(**kwargs):  return api_call('release_range',  kwargs)
+def release_ip(**kwargs):     return api_call('release_ip',     kwargs)
+def ls_addresses(**kwargs):   return api_call('ls_addresses',   kwargs)
+
+DISPATCH_V1 = {
+    'find_device':           find_device,
+    'create_device':         create_device,
+    'find_vrf':              find_vrf,
+    'create_vrf':            create_vrf,
+    'update_vrf':            update_vrf,
+    'delete_vrf':            delete_vrf,
+    'find_interface':        find_interface,
+    'create_interface':      create_interface,
+    'create_subinterface':   create_subinterface,
+    'delete_interface':      delete_interface,
+    'assign_interface_vrf':  assign_interface_vrf,
+    'release_interface_vrf': release_interface_vrf,
+    'assign_ip':             assign_ip,
+    'release_ip_assign':     release_ip_assign,
+    'ls_ranges':             ls_ranges,
+    'create_range':          create_range,
+    'alloc_range':           alloc_range,
+    'alloc_ip':              alloc_ip,
+    'release_range':         release_range,
+    'release_ip':            release_ip,
+    'ls_addresses':          ls_addresses,
+}
+
+CATALOGS = {
+    1: DISPATCH_V1,
+    # 2: DISPATCH_V2,  ← future
+}
+
+def get_dispatch(doc: dict) -> dict:
+    """Get dispatch table for catalog version in document."""
+    v = doc.get('catalog_v', 1)
+    if v not in CATALOGS:
+        raise Exception(f'catalog_v {v} not found')
+    return CATALOGS[v]
+===
+# node: 'jsonwf/src/decomposer.py'
+# fqnp: jsonwf/src/decomposer.py
+#!/usr/bin/env python3
+"""
+jsonwf decomposer — translate high-level provisioning order into jsonwf document
+Maps service type to fn[] sequence using service catalog templates.
+"""
+
+import json
+from datetime import datetime
+from jsonwf.catalog.v1.service_catalog import SERVICE_TEMPLATES
+
+def now():
+    return datetime.utcnow().strftime('%y%m%d%H%M')
+
+class Decomposer:
+    """Translate provisioning order into executable jsonwf document."""
+
+    def __init__(self, catalog_v=1):
+        self.catalog_v  = catalog_v
+        self.templates  = SERVICE_TEMPLATES
+
+    def decompose(self, order: dict) -> dict:
+        """
+        Decompose order into jsonwf document.
+        order must contain: service_type, params{}
+        Returns jsonwf document with fn[] populated.
+        """
+        service_type = order.get('service_type')
+        if not service_type:
+            raise ValueError('order missing service_type')
+
+        template = self.templates.get(service_type)
+        if not template:
+            raise ValueError(f'no template for service_type: {service_type}')
+
+        # Build fn[] from template, injecting order params
+        fn_list = []
+        for step in template['steps']:
+            fn_name = step['fn']
+            args    = {k: order['params'].get(v, v) for k, v in step['args'].items()}
+            fn_list.append({fn_name: args})
+
+        doc = {
+            'process':    service_type,
+            'start_time': now(),
+            'catalog_v':  self.catalog_v,
+            'order':      order,
+            'state':      dict(order.get('params', {})),
+            'fn':         fn_list,
+            'status':     'pending'
+        }
+        return doc
+
+
+if __name__ == '__main__':
+    import sys
+    d = Decomposer()
+    order = {
+        'service_type': 'provision_device',
+        'params': {
+            'ne_name':      'cisco7559',
+            'parent_ip':    '10.0.0.0',
+            'parent_cidr':  24,
+            'cidr':         28,
+            'domain':       '_',
+            'vrf_name':     'CUST_A',
+            'vrf_customer': 'acme',
+            'rd':           '65000:100',
+            'if_name':      'eth0.100',
+            'vlan':         100,
+        }
+    }
+    doc = d.decompose(order)
+    print(json.dumps(doc, indent=2))
+===
+# node: 'jsonwf/catalog/v1/service_catalog.py'
+# fqnp: jsonwf/catalog/v1/service_catalog.py
+#!/usr/bin/env python3
+"""
+jsonwf service catalog v1 — provisioning service templates
+Maps service_type to fn[] sequence templates.
+"""
+
+SERVICE_TEMPLATES = {
+    'provision_device': {
+        'description': 'Full device provisioning — subrange, VRF, subif, IP assignment',
+        'steps': [
+            {'fn': 'find_device',          'args': {'ne_name': 'ne_name'}},
+            {'fn': 'alloc_range',          'args': {'parent_ip': 'parent_ip', 'parent_cidr': 'parent_cidr',
+                                                     'cidr': 'cidr', 'domain': 'domain',
+                                                     'is_private': '1', 'owner': 'ne_name',
+                                                     'min_subrange_cidr': '32'}},
+            {'fn': 'create_vrf',           'args': {'ne_name': 'ne_name', 'vrf_name': 'vrf_name',
+                                                     'vrf_customer': 'vrf_customer', 'rd': 'rd'}},
+            {'fn': 'create_subinterface',  'args': {'ne_name': 'ne_name', 'if_name': 'if_name',
+                                                     'vlan': 'vlan', 'encapsulation': '1'}},
+            {'fn': 'assign_interface_vrf', 'args': {'ne_name': 'ne_name', 'if_name': 'if_name',
+                                                     'vrf_name': 'vrf_name'}},
+            {'fn': 'alloc_ip',             'args': {'range_ip': 'parent_ip', 'range_cidr': 'cidr',
+                                                     'domain': 'vrf_name', 'is_private': 'true',
+                                                     'owner': 'vrf_customer'}},
+            {'fn': 'assign_ip',            'args': {'interface_key': 'ne_name:if_name',
+                                                     'ip_key': 'vrf_name:ip', 'ip_role': '0'}},
+        ]
+    },
+
+    'allocate_ip_only': {
+        'description': 'Allocate IP from existing range and assign to interface',
+        'steps': [
+            {'fn': 'alloc_ip',   'args': {'range_ip': 'range_ip', 'range_cidr': 'cidr',
+                                           'domain': 'domain', 'is_private': 'true',
+                                           'owner': 'owner'}},
+            {'fn': 'assign_ip',  'args': {'interface_key': 'interface_key',
+                                           'ip_key': 'domain:ip', 'ip_role': '0'}},
+        ]
+    },
+
+    'create_vrf_only': {
+        'description': 'Create VRF on device',
+        'steps': [
+            {'fn': 'find_device', 'args': {'ne_name': 'ne_name'}},
+            {'fn': 'create_vrf',  'args': {'ne_name': 'ne_name', 'vrf_name': 'vrf_name',
+                                            'vrf_customer': 'vrf_customer', 'rd': 'rd'}},
+        ]
+    },
+}
+===
