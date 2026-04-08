@@ -284,6 +284,8 @@ def handle_release_interface_vrf(args):
 
 # ── Flask app ─────────────────────────────────────────────────
 
+terminal_log = []
+
 app = Flask(__name__, static_folder='../ui/static', static_url_path='')
 app.config['SQLALCHEMY_DATABASE_URI'] = IPAMConfig.SQLALCHEMY_DATABASE_URI
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -349,6 +351,18 @@ def dispatch():
         return jsonify({'op': func, 'status': 'fail',
                         'error': {'reason': msg.split(':')[0], 'message': msg},
                         'data': None}), http
+
+@app.route('/api/terminal', methods=['POST'])
+def terminal_push():
+    data = request.get_json()
+    terminal_log.append(data)
+    if len(terminal_log) > 100:
+        terminal_log.pop(0)
+    return jsonify({'status': 'ok'})
+
+@app.route('/api/terminal', methods=['GET'])
+def terminal_get():
+    return jsonify(terminal_log[-50:])
 
 if __name__ == '__main__':
     print('Network Manager — http://localhost:5002')
