@@ -1,6 +1,6 @@
 // node: 'merged_ui/src/static/js/api.js'
 // Unified API — merged_ui port 5002
-const API_URL = 'http://localhost:5002/api/';
+const API_URL = window.location.origin + '/api/';
 
 export async function apiCall(func, args) {
     try {
